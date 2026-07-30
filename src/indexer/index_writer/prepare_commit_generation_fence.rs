@@ -8,6 +8,20 @@ use super::{index_documents, AddBatch, AddOperation, IndexWriter, MEMORY_BUDGET_
 use crate::schema::{Schema, STRING};
 use crate::{doc, Index, TantivyDocument, TantivyError, Term};
 
+fn retire_repository_workers(
+    index_writer: &mut IndexWriter<TantivyDocument>,
+) -> crate::Result<()> {
+    index_writer.recreate_document_channel();
+    let original_handles = std::mem::take(&mut index_writer.workers_join_handle);
+    for handle in original_handles {
+        handle
+            .join()
+            .expect("repository indexing worker should not panic")?;
+    }
+    assert!(index_writer.workers_join_handle.is_empty());
+    Ok(())
+}
+
 #[test]
 fn prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers() -> crate::Result<()> {
     let mut schema_builder = Schema::builder();
@@ -18,14 +32,7 @@ fn prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers() -> 
 
     // Retire the repository-created workers so the join order below is fully
     // deterministic. This leaves a fresh, live document channel with no workers.
-    index_writer.recreate_document_channel();
-    let original_handles = std::mem::take(&mut index_writer.workers_join_handle);
-    for handle in original_handles {
-        handle
-            .join()
-            .expect("repository indexing worker should not panic")?;
-    }
-    assert!(index_writer.workers_join_handle.is_empty());
+    retire_repository_workers(&mut index_writer)?;
 
     // Model one old-generation worker that already owns a real document and can
     // publish through the real SegmentUpdater after another old worker fails.
@@ -116,6 +123,81 @@ fn prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers() -> 
     let new_term = Term::from_field_text(text_field, "new-generation");
     assert_eq!(searcher.doc_freq(&old_term)?, 0);
     assert_eq!(searcher.doc_freq(&new_term)?, 1);
+
+    Ok(())
+}
+
+#[test]
+fn replacement_spawn_failure_rolls_back_partial_generation() -> crate::Result<()> {
+    let mut schema_builder = Schema::builder();
+    let text_field = schema_builder.add_text_field("text", STRING);
+    let index = Index::create_in_ram(schema_builder.build());
+    let mut index_writer: IndexWriter<TantivyDocument> =
+        index.writer_with_num_threads(2, MEMORY_BUDGET_NUM_BYTES_MIN * 2)?;
+
+    retire_repository_workers(&mut index_writer)?;
+    index_writer.fail_worker_spawn_after = Some(1);
+
+    let preparation_error = match index_writer.prepare_commit() {
+        Ok(prepared_commit) => {
+            prepared_commit.abort()?;
+            panic!("synthetic replacement-worker spawn failure should abort prepare_commit")
+        }
+        Err(error) => error,
+    };
+
+    assert!(preparation_error
+        .to_string()
+        .contains("fieldwork synthetic replacement-worker spawn failure"));
+    assert_eq!(
+        index_writer.workers_join_handle.len(),
+        index_writer.options.num_worker_threads
+    );
+    assert!(index_writer.index_writer_status.is_alive());
+
+    index_writer.add_document(doc!(text_field => "after-spawn-recovery"))?;
+    index_writer.commit()?;
+    let searcher = index.reader()?.searcher();
+    let recovered_term = Term::from_field_text(text_field, "after-spawn-recovery");
+    assert_eq!(searcher.doc_freq(&recovered_term)?, 1);
+
+    Ok(())
+}
+
+#[test]
+fn rollback_failure_preserves_primary_error_and_blocks_admission() -> crate::Result<()> {
+    let mut schema_builder = Schema::builder();
+    let text_field = schema_builder.add_text_field("text", STRING);
+    let index = Index::create_in_ram(schema_builder.build());
+    let mut index_writer: IndexWriter<TantivyDocument> =
+        index.writer_with_num_threads(1, MEMORY_BUDGET_NUM_BYTES_MIN)?;
+
+    retire_repository_workers(&mut index_writer)?;
+    index_writer.fail_next_recovery_rollback = true;
+    index_writer.workers_join_handle = vec![thread::spawn(|| {
+        Err(TantivyError::ErrorInThread(
+            "fieldwork synthetic primary worker failure".to_string(),
+        ))
+    })];
+
+    let preparation_error = match index_writer.prepare_commit() {
+        Ok(prepared_commit) => {
+            prepared_commit.abort()?;
+            panic!("synthetic worker and rollback failure should abort prepare_commit")
+        }
+        Err(error) => error,
+    };
+
+    assert!(preparation_error
+        .to_string()
+        .contains("fieldwork synthetic primary worker failure"));
+    assert!(!preparation_error
+        .to_string()
+        .contains("fieldwork synthetic recovery rollback failure"));
+    assert!(!index_writer.index_writer_status.is_alive());
+    assert!(index_writer
+        .add_document(doc!(text_field => "must-be-rejected"))
+        .is_err());
 
     Ok(())
 }
