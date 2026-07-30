@@ -63,7 +63,19 @@ jobs:
             prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segment \
             --locked --no-default-features -- --nocapture
 
-      - name: Run adjacent prepare and rollback controls
+      - name: Run exact adjacent prepare and rollback controls
         run: |
-          cargo +1.88.0 test --lib test_prepare_ --locked --no-default-features
-          cargo +1.88.0 test --lib test_rollback --locked --no-default-features
+          cargo +1.88.0 test --lib --locked --no-default-features -- --list \
+            > /tmp/tantivy-lib-tests.txt
+
+          run_exact_test() {
+            local test_name="$1"
+            grep -Fx "${test_name}: test" /tmp/tantivy-lib-tests.txt
+            cargo +1.88.0 test --lib --locked --no-default-features \
+              "${test_name}" -- --exact
+          }
+
+          run_exact_test indexer::index_writer::tests::test_prepare_with_commit_message
+          run_exact_test indexer::index_writer::tests::test_prepare_but_rollback
+          run_exact_test indexer::index_writer::tests::test_delete_all_documents_rollback_correct_stamp
+          run_exact_test indexer::index_writer::tests::test_delete_all_documents_and_rollback
