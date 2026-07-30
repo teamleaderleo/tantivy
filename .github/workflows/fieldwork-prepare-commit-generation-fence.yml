@@ -44,10 +44,8 @@ jobs:
           git apply .fieldwork/prepare-commit-generation-fence.patch
           git diff --check
 
-      - name: Check staged regression formatting
-        run: >-
-          rustfmt +1.88.0 --edition 2021 --check
-          src/indexer/index_writer/prepare_commit_generation_fence.rs
+      - name: Check staged source and regression formatting
+        run: cargo +1.88.0 fmt --all -- --check
 
       - name: Resolve one exact dependency graph
         run: |
@@ -58,14 +56,22 @@ jobs:
           echo "cargo metadata sha256: $(sha256sum /tmp/cargo-metadata.json | cut -d' ' -f1)"
           echo "repair patch sha256: $(sha256sum .fieldwork/prepare-commit-generation-fence.patch | cut -d' ' -f1)"
 
-      - name: Run fail-closed generation-fence regression
+      - name: Run fail-closed generation-fence regressions
         run: |
           cargo +1.88.0 test --lib --locked --no-default-features -- --list \
             > /tmp/tantivy-lib-tests.txt
-          test_name=indexer::index_writer::prepare_commit_generation_fence::prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers
-          grep -Fx "${test_name}: test" /tmp/tantivy-lib-tests.txt
-          cargo +1.88.0 test --lib --locked --no-default-features \
-            "${test_name}" -- --exact --nocapture
+
+          run_exact_test() {
+            local test_name="$1"
+            grep -Fx "${test_name}: test" /tmp/tantivy-lib-tests.txt
+            cargo +1.88.0 test --lib --locked --no-default-features \
+              "${test_name}" -- --exact --nocapture
+          }
+
+          prefix=indexer::index_writer::prepare_commit_generation_fence
+          run_exact_test "${prefix}::prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers"
+          run_exact_test "${prefix}::replacement_spawn_failure_rolls_back_partial_generation"
+          run_exact_test "${prefix}::rollback_failure_preserves_primary_error_and_blocks_admission"
 
       - name: Run exact adjacent prepare and rollback controls
         run: |
