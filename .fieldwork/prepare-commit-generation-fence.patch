@@ -1,0 +1,14 @@
+diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
+index 21ae499ef4..f2a6e5c8a7 100644
+--- a/src/indexer/index_writer.rs
++++ b/src/indexer/index_writer.rs
+@@ -815,6 +815,9 @@ impl<D: Document> Drop for IndexWriter<D> {
+     }
+ }
+ 
++#[cfg(test)]
++mod prepare_commit_generation_fence;
++
+ #[cfg(test)]
+ mod tests {
+     use std::collections::{HashMap, HashSet};
