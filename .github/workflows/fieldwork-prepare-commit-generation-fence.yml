@@ -1,0 +1,57 @@
+name: Fieldwork prepare-commit generation fence
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/indexer/index_writer/prepare_commit_generation_fence.rs'
+      - '.fieldwork/prepare-commit-generation-fence.patch'
+      - '.fieldwork/prepare-commit-generation-fence.md'
+      - '.github/workflows/fieldwork-prepare-commit-generation-fence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  characterize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+        with:
+          toolchain: stable
+          profile: minimal
+          components: rustfmt
+          override: true
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Apply exact test-module registration
+        run: |
+          git apply --check .fieldwork/prepare-commit-generation-fence.patch
+          git apply .fieldwork/prepare-commit-generation-fence.patch
+          git diff --check
+
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+
+      - name: Run generation-fence characterization
+        run: |
+          cargo +stable test --lib \
+            prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segment \
+            --locked --no-default-features -- --nocapture
+
+      - name: Run adjacent prepare and rollback controls
+        run: |
+          cargo +stable test --lib test_prepare_ --locked --no-default-features
+          cargo +stable test --lib test_rollback --locked --no-default-features
