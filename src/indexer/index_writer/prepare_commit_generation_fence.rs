@@ -9,8 +9,7 @@ use crate::schema::{Schema, STRING};
 use crate::{doc, Index, TantivyDocument, TantivyError, Term};
 
 #[test]
-fn prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers(
-) -> crate::Result<()> {
+fn prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers() -> crate::Result<()> {
     let mut schema_builder = Schema::builder();
     let text_field = schema_builder.add_text_field("text", STRING);
     let index = Index::create_in_ram(schema_builder.build());
