@@ -7,14 +7,14 @@ use smallvec::smallvec;
 use super::{
     index_documents, AddBatch, AddOperation, IndexWriter, MEMORY_BUDGET_NUM_BYTES_MIN,
 };
-use crate::schema::{Schema, TEXT};
+use crate::schema::{Schema, STRING};
 use crate::{doc, Index, TantivyDocument, TantivyError, Term};
 
 #[test]
 fn prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segment(
 ) -> crate::Result<()> {
     let mut schema_builder = Schema::builder();
-    let text_field = schema_builder.add_text_field("text", TEXT);
+    let text_field = schema_builder.add_text_field("text", STRING);
     let index = Index::create_in_ram(schema_builder.build());
     let mut index_writer: IndexWriter<TantivyDocument> =
         index.writer_with_num_threads(3, MEMORY_BUDGET_NUM_BYTES_MIN * 3)?;
