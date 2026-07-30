@@ -9,7 +9,7 @@ use crate::schema::{Schema, STRING};
 use crate::{doc, Index, TantivyDocument, TantivyError, Term};
 
 #[test]
-fn prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segment(
+fn prepare_commit_failure_rolls_back_before_returning_and_rebuilds_workers(
 ) -> crate::Result<()> {
     let mut schema_builder = Schema::builder();
     let text_field = schema_builder.add_text_field("text", STRING);
@@ -28,9 +28,8 @@ fn prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segme
     }
     assert!(index_writer.workers_join_handle.is_empty());
 
-    // Model one old-generation worker that has already taken ownership of a
-    // document but has not yet published its segment. Its JoinHandle will be the
-    // third entry and therefore dropped when the second synthetic worker fails.
+    // Model one old-generation worker that already owns a real document and can
+    // publish through the real SegmentUpdater after another old worker fails.
     let old_opstamp = index_writer.stamper.stamp();
     let old_index = index_writer.index.clone();
     let old_segment_updater = index_writer.segment_updater.clone();
@@ -41,7 +40,7 @@ fn prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segme
     let late_old_worker = thread::spawn(move || {
         release_old_rx
             .recv()
-            .expect("test should release the detached old worker");
+            .expect("test should release the final old worker");
         let batch: AddBatch<TantivyDocument> = smallvec![AddOperation {
             opstamp: old_opstamp,
             document: old_document,
@@ -61,11 +60,24 @@ fn prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segme
     });
 
     let successful_worker = thread::spawn(|| Ok(()));
-    let failed_worker = thread::spawn(|| {
+    let (failure_ready_tx, failure_ready_rx) = mpsc::channel::<()>();
+    let failed_worker = thread::spawn(move || {
+        failure_ready_tx
+            .send(())
+            .expect("test should observe the synthetic failure worker");
         Err(TantivyError::ErrorInThread(
             "fieldwork synthetic old-worker failure".to_string(),
         ))
     });
+    let release_after_failure = thread::spawn(move || {
+        failure_ready_rx
+            .recv()
+            .expect("synthetic failure worker should start");
+        release_old_tx
+            .send(())
+            .expect("final old worker should still be joinable");
+    });
+
     index_writer.workers_join_handle = vec![successful_worker, failed_worker, late_old_worker];
 
     let preparation_error = match index_writer.prepare_commit() {
@@ -75,34 +87,35 @@ fn prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segme
         }
         Err(error) => error,
     };
+    release_after_failure
+        .join()
+        .expect("old-worker release helper should not panic");
+
     assert!(preparation_error
         .to_string()
         .contains("fieldwork synthetic old-worker failure"));
 
-    // The first successful join already spawned one replacement on the new
-    // document channel. The later failure did not retire that generation.
-    assert_eq!(index_writer.workers_join_handle.len(), 1);
-    assert!(index_writer.index_writer_status.is_alive());
-    index_writer.add_document(doc!(text_field => "new-generation"))?;
-
-    // The third old worker was not joined. Dropping its JoinHandle did not stop
-    // it, and it can still publish through the shared SegmentUpdater.
-    assert!(publication_rx.try_recv().is_err());
-    release_old_tx
-        .send(())
-        .expect("detached old worker should still be running");
+    // prepare_commit must not return until every old handle has settled. The old
+    // worker did publish into the old updater, but the repair then rolled back and
+    // rebuilt a complete fresh worker generation before returning the error.
     publication_rx
         .recv_timeout(Duration::from_secs(10))
-        .expect("detached old worker should publish after prepare_commit returns")
+        .expect("old worker should settle before prepare_commit returns")
         .map_err(TantivyError::ErrorInThread)?;
+    assert_eq!(
+        index_writer.workers_join_handle.len(),
+        index_writer.options.num_worker_threads
+    );
+    assert!(index_writer.index_writer_status.is_alive());
 
-    // A later commit accepts both the newly admitted document and the segment
-    // published by the detached old generation.
+    // The rebuilt writer remains usable, but the rolled-back old-generation
+    // segment must not become searchable after a later successful commit.
+    index_writer.add_document(doc!(text_field => "new-generation"))?;
     index_writer.commit()?;
     let searcher = index.reader()?.searcher();
     let old_term = Term::from_field_text(text_field, "old-generation-late");
     let new_term = Term::from_field_text(text_field, "new-generation");
-    assert_eq!(searcher.doc_freq(&old_term)?, 1);
+    assert_eq!(searcher.doc_freq(&old_term)?, 0);
     assert_eq!(searcher.doc_freq(&new_term)?, 1);
 
     Ok(())
