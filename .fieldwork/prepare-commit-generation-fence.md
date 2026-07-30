@@ -1,143 +1,120 @@
-# Tantivy `prepare_commit` generation-fence probe
+# Tantivy `prepare_commit` fail-closed repair trial
 
 ## Scope
 
 Fieldwork issue: `teamleaderleo/fieldwork#180`  
 Fieldwork report: `teamleaderleo/fieldwork#182`  
+Evidence-audit note: `teamleaderleo/fieldwork#225`  
 Pinned fork base: `667132fa7ab4a30e0c1870d791f23902ebfc6152`  
-Exact executed probe head: `b92909ef3d5ac5695d1c85b1b0cb52a03ee51e49`  
+Characterization head: `b92909ef3d5ac5695d1c85b1b0cb52a03ee51e49`  
+Corrected control head: `ed3d4b4b82b34e0f214705ef55e6e8eaa84e60cd`  
 Upstream contact authorized: `false`
 
-This is a fork-only characterization. It confirms a mixed worker-generation lifecycle after failed preparation. It does not claim index corruption and does not yet select a production repair.
+This is a fork-only production-repair trial. It is not an upstream proposal and is not accepted until the exact target workflow executes.
 
-## Source-order question
+## Confirmed defect
 
-`IndexWriter::prepare_commit()` currently:
+The repository-native characterization proved that current `prepare_commit()` can:
 
-1. replaces the document channel and `IndexWriterStatus`;
-2. moves out the prior worker join handles;
-3. joins one old worker;
-4. immediately starts one replacement worker on the new channel;
-5. repeats until a join, worker, or replacement-spawn error returns through `?`.
+1. start a replacement worker after one old worker settles;
+2. return a later old-worker error;
+3. leave the replacement generation alive for new admission;
+4. abandon an unjoined old worker;
+5. permit that old worker to publish a real segment later;
+6. commit both the late old segment and post-error new work.
 
-A later error can therefore occur after partial replacement startup. Remaining old join handles are dropped rather than joined. Their threads are not cancelled by dropping the handles, and their worker bombs refer to the old status generation rather than the newly installed status.
+The controlled index remained queryable. The confirmed defect is lifecycle and generation ownership, not demonstrated index corruption.
 
-## Deterministic target test
+## Repair invariant
 
-The nested test module has private access without adding production API surface. It:
+`prepare_commit()` must not publish the next worker generation until every old worker has settled successfully.
 
-1. cleanly retires the repository-created workers;
-2. installs three ordered synthetic join handles:
-   - one successful old worker;
-   - one failing old worker;
-   - one blocked old worker that owns a real document and the real `SegmentUpdater`;
-3. calls `prepare_commit()`;
-4. requires the second worker error;
-5. verifies that the first successful join already created a replacement worker and the new writer status remains alive;
-6. admits a new-generation document after the failed preparation;
-7. releases the third, now-detached old worker;
-8. runs Tantivy's real `index_documents()` path and waits for segment-updater publication;
-9. commits again;
-10. requires both the late old-generation document and the newly admitted document to be searchable.
+If any old worker join or worker result fails:
 
-This separates three claims:
+- continue joining every remaining old handle;
+- preserve the first failure as the returned error;
+- rollback/rebuild before returning;
+- reject late old-generation publication from the durable post-error state.
 
-- a replacement generation starts before all old workers settle;
-- an unvisited old worker continues after its `JoinHandle` is dropped;
-- a later commit can include both post-error new work and late prior-generation publication.
+If replacement startup fails after old workers settle:
 
-## Executed result
+- rollback/rebuild the partial replacement generation;
+- return the replacement-spawn error.
 
-Focused run `30513367302` completed successfully on exact head `b92909ef3d5ac5695d1c85b1b0cb52a03ee51e49`.
+If rollback/rebuild itself fails:
 
-Confirmed path:
+- keep the initiating error primary;
+- log cleanup failure as secondary evidence;
+- kill the updater and current writer status;
+- drop the sender so remaining state fails closed rather than accepting unowned work.
+
+## Candidate shape
+
+The patch adds one private recovery helper and changes `prepare_commit()` ordering:
 
 ```text
-prepare_commit returns the synthetic old-worker error
-replacement generation remains alive
-new document admission succeeds
-unjoined old worker publishes through the real segment updater
-later commit succeeds
-old-generation and new-generation terms are both searchable
+recreate channel
+join every old handle, collecting first failure
+if old failure: rollback/rebuild, then return primary error
+start the full replacement generation
+if spawn failure: rollback/rebuild, then return spawn error
+prepare commit only after all of the above succeeds
 ```
 
-The focused characterization passed `1/1`. The ordinary pull-request Unit tests run `30513367326` also passed its check, `test-none`, `test-all`, and `test-quickwit` jobs.
+No generation token or second lifecycle owner is introduced. The existing rollback/rebuild path remains the authority for returning to committed state.
 
-The result confirms a lifecycle and ownership defect. It does not establish corrupt index contents: the controlled later commit consistently retained both documents.
+## Repair regression
 
-## Validation correction
+The deterministic private-access test retains the three ordered synthetic handles and the real indexing path:
 
-The first green focused run used `cargo test --lib test_rollback`. That filter collected zero tests while returning success. The main characterization result is unaffected, but the advertised rollback control was not coverage.
+- first old worker succeeds;
+- second old worker returns the synthetic primary error;
+- third old worker owns a real document and publishes through the real `SegmentUpdater`;
+- a helper releases the final worker after the failure worker starts;
+- `prepare_commit()` must wait for all handles;
+- the old worker's `index_documents()` call must settle before `prepare_commit()` returns;
+- the returned error must still be the synthetic second-worker error;
+- the writer must contain a complete rebuilt worker generation;
+- a new document must be accepted and committed;
+- the old-generation term must remain absent;
+- the new-generation term must be searchable.
 
-The workflow now:
-
-- lists the available library tests;
-- requires each exact named control to exist;
-- runs each with `--exact`;
-- fails before execution if a named test is absent.
-
-Exact controls:
-
-```text
-indexer::index_writer::tests::test_prepare_with_commit_message
-indexer::index_writer::tests::test_prepare_but_rollback
-indexer::index_writer::tests::test_delete_all_documents_rollback_correct_stamp
-indexer::index_writer::tests::test_delete_all_documents_and_rollback
-```
-
-This correction requires a new exact-head run before claiming the upgraded adjacent-control receipt.
-
-## Files
-
-- `src/indexer/index_writer/prepare_commit_generation_fence.rs` — deterministic nested unit test;
-- `.fieldwork/prepare-commit-generation-fence.patch` — one-line test-module registration;
-- `.github/workflows/fieldwork-prepare-commit-generation-fence.yml` — read-only execution carrier.
-
-The patch is intentionally limited to `#[cfg(test)]` registration. No production source behavior changes.
+This directly distinguishes “old work reached the previous updater” from “old work survived rollback into a later searchable commit.”
 
 ## Execution gate
 
-The repository declares Rust `1.86`, but the generated current dependency graph did not resolve under that declared floor. The successful characterization used Rust `1.88.0`; the separate declared-MSRV/dependency issue is tracked in Fieldwork #200.
+The workflow:
 
-The current workflow runs:
+1. checks out the exact PR head rather than a merge ref;
+2. applies the exact repair patch and test registration;
+3. format-checks the repaired source and test;
+4. generates one locked dependency graph with Rust 1.88;
+5. records dependency and patch digests;
+6. preflights the exact repair test name;
+7. runs it with `--exact`;
+8. preflights and runs four exact adjacent prepare/rollback controls;
+9. leaves the ordinary repository Unit Tests workflow as separate integration evidence.
 
-```text
-rustfmt +1.88.0 --edition 2021 --check src/indexer/index_writer/prepare_commit_generation_fence.rs
-cargo +1.88.0 generate-lockfile
-cargo +1.88.0 metadata --locked --format-version 1
-cargo +1.88.0 test --lib prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segment --locked --no-default-features -- --nocapture
-four exact adjacent prepare/rollback controls with existence preflight
-```
+## Self-review limits
 
-The repository's ordinary pull-request workflows remain separate integration evidence.
+The candidate still lacks a target-native injected replacement-thread spawn failure. `thread::Builder::spawn()` failure is difficult to force without a narrow test seam.
 
-## Self-review
+The candidate also does not yet execute a rollback-construction failure. The fallback kill path is source-reviewed but not target-executed.
 
-An initial test revision used a tokenized `TEXT` field with hyphenated values, which would have made the final exact-term assertions false for an unrelated tokenizer reason. The fixture uses `STRING` so the searchable terms are exact.
+These are real remaining gates, not reasons to discard the primary repair test. Promotion beyond a fork trial requires:
 
-A later self-review found the zero-test rollback filter described above. A green command is not evidence when its intended assertion did not run.
-
-A local clone/test attempt could not run because the available container could not resolve GitHub and lacked a Rust toolchain. Those were environment limitations, not target results.
-
-## Repair invariant retained
-
-A complete repair must not return from failed `prepare_commit()` while either of these is true:
-
-- an old worker remains able to publish into the shared updater;
-- a replacement generation remains available for new admission.
-
-Admission blocking alone is insufficient. The next candidate should join all old workers before publishing replacements and must retire or rebuild the writer on any worker-join, worker-result, or replacement-spawn failure. The initiating worker error should remain primary if cleanup also fails.
+- one bounded spawn-failure injection seam or equivalent deterministic control;
+- one cleanup-failure control proving no admission remains possible;
+- exact primary-versus-secondary error assertions;
+- complete repository gate on the exact candidate head.
 
 ## Evidence class
 
-- source mechanism: `source-read`;
-- deterministic Tantivy regression: `target-executed` at `b92909ef3d5ac5695d1c85b1b0cb52a03ee51e49`;
-- ordinary repository pull-request gate: `integration-executed` at the same head;
-- exact corrected adjacent-control gate: pending current-head rerun;
-- production repair: absent.
+- original defect: `target-executed`;
+- corrected characterization controls: `target-executed`;
+- repair source: `target-test-prepared` until the new workflow completes;
+- spawn-failure cleanup: `source-read` only;
+- rollback-failure cleanup: `source-read` only;
+- public upstream interaction: absent.
 
-## Limits
-
-The test uses synthetic ordered join handles to force the error schedule. It exercises real document indexing, segment-updater publication, commit, and search behavior, but it does not inject a real filesystem or `SegmentWriter` failure. A production candidate still needs cleanup-failure and replacement-spawn-failure controls.
-
-No upstream issue, pull request, comment, reaction, branch, or message was created or changed.
+No upstream issue, pull request, comment, reaction, branch, email, or message was created or changed.
