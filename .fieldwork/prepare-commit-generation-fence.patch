@@ -23,7 +23,7 @@ index 21ae499ef4..f4a7215f31 100644
      /// Detects and removes the files that are not used by the index anymore.
      pub fn garbage_collect_files(&self) -> FutureResult<GarbageCollectionResult> {
          self.segment_updater.schedule_garbage_collect()
-@@ -633,15 +647,42 @@ impl<D: Document> IndexWriter<D> {
+@@ -633,12 +647,32 @@ impl<D: Document> IndexWriter<D> {
  
          let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
  
