@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use smallvec::smallvec;
 
-use super::{
-    index_documents, AddBatch, AddOperation, IndexWriter, MEMORY_BUDGET_NUM_BYTES_MIN,
-};
+use super::{index_documents, AddBatch, AddOperation, IndexWriter, MEMORY_BUDGET_NUM_BYTES_MIN};
 use crate::schema::{Schema, STRING};
 use crate::{doc, Index, TantivyDocument, TantivyError, Term};
 
@@ -77,11 +75,9 @@ fn prepare_commit_failure_leaves_next_generation_live_and_accepts_late_old_segme
         }
         Err(error) => error,
     };
-    assert!(
-        preparation_error
-            .to_string()
-            .contains("fieldwork synthetic old-worker failure")
-    );
+    assert!(preparation_error
+        .to_string()
+        .contains("fieldwork synthetic old-worker failure"));
 
     // The first successful join already spawned one replacement on the new
     // document channel. The later failure did not retire that generation.
