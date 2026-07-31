@@ -8,9 +8,7 @@ use super::{index_documents, AddBatch, AddOperation, IndexWriter, MEMORY_BUDGET_
 use crate::schema::{Schema, STRING};
 use crate::{doc, Index, TantivyDocument, TantivyError, Term};
 
-fn retire_repository_workers(
-    index_writer: &mut IndexWriter<TantivyDocument>,
-) -> crate::Result<()> {
+fn retire_repository_workers(index_writer: &mut IndexWriter<TantivyDocument>) -> crate::Result<()> {
     index_writer.recreate_document_channel();
     let original_handles = std::mem::take(&mut index_writer.workers_join_handle);
     for handle in original_handles {
