@@ -32,8 +32,13 @@ jobs:
         with:
           toolchain: 1.88.0
           profile: minimal
-          components: rustfmt
           override: true
+
+      - name: Install project-policy formatter
+        run: |
+          rustup toolchain install nightly-2025-06-26 \
+            --profile minimal \
+            --component rustfmt
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
@@ -46,7 +51,7 @@ jobs:
 
       - name: Check candidate source and regression formatting
         run: |
-          rustfmt +1.88.0 --edition 2021 --check --config skip_children=true \
+          rustfmt +nightly-2025-06-26 --edition 2021 --check \
             src/indexer/index_writer.rs \
             src/indexer/index_writer/prepare_commit_generation_fence.rs
 
