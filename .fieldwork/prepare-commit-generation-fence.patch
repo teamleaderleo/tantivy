@@ -26,7 +26,7 @@ diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
          };
          index_writer.start_workers()?;
          Ok(index_writer)
-@@ -404,6 +416,19 @@ impl<D: Document> IndexWriter<D> {
+@@ -404,6 +416,18 @@ impl<D: Document> IndexWriter<D> {
      /// Spawns a new worker thread for indexing.
      /// The thread consumes documents from the pipeline.
      fn add_indexing_worker(&mut self) -> crate::Result<()> {
@@ -76,7 +76,7 @@ diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
      /// Detects and removes the files that are not used by the index anymore.
      pub fn garbage_collect_files(&self) -> FutureResult<GarbageCollectionResult> {
          self.segment_updater.schedule_garbage_collect()
-@@ -633,12 +683,31 @@ impl<D: Document> IndexWriter<D> {
+@@ -633,12 +683,32 @@ impl<D: Document> IndexWriter<D> {
  
          let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
  
