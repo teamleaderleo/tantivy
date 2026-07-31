@@ -14,7 +14,7 @@ diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
  }
  
  fn compute_deleted_bitset(
-@@ -336,6 +342,12 @@ impl<D: Document> IndexWriter<D> {
+@@ -336,5 +342,11 @@ impl<D: Document> IndexWriter<D> {
  
              worker_id: 0,
 +
@@ -45,7 +45,7 @@ diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
          let document_receiver_clone = self.operation_receiver()?;
          let index_writer_bomb = self.index_writer_status.create_bomb();
  
-@@ -473,6 +498,31 @@ impl<D: Document> IndexWriter<D> {
+@@ -473,6 +498,30 @@ impl<D: Document> IndexWriter<D> {
          Ok(())
      }
  
@@ -76,7 +76,7 @@ diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
      /// Detects and removes the files that are not used by the index anymore.
      pub fn garbage_collect_files(&self) -> FutureResult<GarbageCollectionResult> {
          self.segment_updater.schedule_garbage_collect()
-@@ -633,12 +683,32 @@ impl<D: Document> IndexWriter<D> {
+@@ -633,12 +683,31 @@ impl<D: Document> IndexWriter<D> {
  
          let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
  
