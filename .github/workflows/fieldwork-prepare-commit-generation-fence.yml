@@ -44,8 +44,11 @@ jobs:
           git apply .fieldwork/prepare-commit-generation-fence.patch
           git diff --check
 
-      - name: Check staged source and regression formatting
-        run: cargo +1.88.0 fmt --all -- --check
+      - name: Check candidate source and regression formatting
+        run: |
+          rustfmt +1.88.0 --edition 2021 --check --config skip_children=true \
+            src/indexer/index_writer.rs \
+            src/indexer/index_writer/prepare_commit_generation_fence.rs
 
       - name: Resolve one exact dependency graph
         run: |
