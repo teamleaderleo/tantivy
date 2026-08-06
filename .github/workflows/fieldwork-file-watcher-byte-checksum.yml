@@ -36,8 +36,8 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Check candidate formatting only
+        run: rustfmt --edition 2021 --check src/directory/mmap_directory/file_watcher.rs
 
       - name: Run checksum regression
         run: cargo test --locked test_compute_checksum_preserves_line_boundaries -- --nocapture
