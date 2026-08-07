@@ -1,0 +1,61 @@
+name: Fieldwork file watcher byte checksum
+
+on:
+  pull_request:
+    branches:
+      - fix/file-watcher-hash-line-boundaries
+    paths:
+      - .github/workflows/fieldwork-file-watcher-byte-checksum.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: de0c882a2d23d933e5cde85cea385cdfed1dc27e
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify identity and fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "de0c882a2d23d933e5cde85cea385cdfed1dc27e"
+          test "$(git diff --name-only 3bb9a430dd88244723265e6fffcb78785cc998b0..HEAD)" = "src/directory/mmap_directory/file_watcher.rs"
+          git diff --check 3bb9a430dd88244723265e6fffcb78785cc998b0..HEAD
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check candidate formatting only
+        run: rustfmt --edition 2021 --check src/directory/mmap_directory/file_watcher.rs
+
+      - name: Resolve ephemeral dependency lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          sha256sum Cargo.lock
+
+      - name: Run checksum regression
+        run: cargo test --locked test_compute_checksum_preserves_line_boundaries -- --nocapture
+
+      - name: Run adjacent file watcher tests
+        run: cargo test --locked file_watcher -- --nocapture
+
+      - name: Verify source stayed immutable
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm Cargo.lock
+          test "$(git rev-parse HEAD)" = "de0c882a2d23d933e5cde85cea385cdfed1dc27e"
+          test -z "$(git status --porcelain)"
