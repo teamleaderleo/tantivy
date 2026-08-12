@@ -1,0 +1,96 @@
+name: PR2999 prepare failure barrier discriminator
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/pr2999-base
+    paths:
+      - '.fieldwork/add_pr2999_prepare_failure_barrier.py'
+      - '.fieldwork/pr2999_prepare_failure_barrier.rs'
+      - '.github/workflows/pr2999-prepare-failure-barrier.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  discriminator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact execution head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact PR 2999 base and carrier fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=039e02e00af3befe4a17e679af6fedfcfdee3d44
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git merge-base HEAD "$base")" = "$base"
+          test -z "$(git diff --name-only "$base"...HEAD -- src/indexer/index_writer.rs src/indexer/index_writer_status.rs)"
+          actual="$(git diff --name-only "$base"...HEAD | sort | tr '\n' ' ')"
+          expected=".fieldwork/add_pr2999_prepare_failure_barrier.py .fieldwork/pr2999_prepare_failure_barrier.rs .github/workflows/pr2999-prepare-failure-barrier.yml "
+          test "$actual" = "$expected"
+
+      - name: Materialize test-only discriminator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .fieldwork/add_pr2999_prepare_failure_barrier.py \
+            src/indexer/index_writer.rs \
+            .fieldwork/pr2999_prepare_failure_barrier.rs
+          git diff --check
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "src/indexer/index_writer.rs src/indexer/index_writer/fieldwork_prepare_failure_barrier.rs "
+          git diff -- src/indexer/index_writer.rs
+
+      - name: Install exact Rust and project formatter
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+        with:
+          toolchain: 1.88.0
+          profile: minimal
+          override: true
+      - name: Install pinned rustfmt
+        run: rustup toolchain install nightly-2025-06-26 --profile minimal --component rustfmt
+
+      - name: Build one locked graph and enumerate exact tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt +nightly-2025-06-26 --edition 2021 --check \
+            src/indexer/index_writer.rs \
+            src/indexer/index_writer/fieldwork_prepare_failure_barrier.rs
+          test ! -e Cargo.lock
+          cargo +1.88.0 generate-lockfile
+          cargo +1.88.0 test --lib --locked --no-default-features -- --list > "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          grep -Fx 'indexer::index_writer::fieldwork_prepare_failure_barrier::prepare_commit_error_returns_before_other_epoch_flushes_settle: test' "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          grep -Fx 'indexer::index_writer::tests::test_prepare_with_commit_message: test' "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          grep -Fx 'indexer::index_writer::tests::test_prepare_but_rollback: test' "$RUNNER_TEMP/tantivy-lib-tests.txt"
+
+      - name: Execute exact overlap discriminator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            indexer::index_writer::fieldwork_prepare_failure_barrier::prepare_commit_error_returns_before_other_epoch_flushes_settle \
+            -- --exact --nocapture
+
+      - name: Execute adjacent successful-prepare controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            indexer::index_writer::tests::test_prepare_with_commit_message \
+            -- --exact --nocapture
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            indexer::index_writer::tests::test_prepare_but_rollback \
+            -- --exact --nocapture
+
+      - name: Final carrier hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "Cargo.lock src/indexer/index_writer.rs src/indexer/index_writer/fieldwork_prepare_failure_barrier.rs "
