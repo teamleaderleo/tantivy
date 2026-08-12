@@ -42,6 +42,9 @@ jobs:
           python .fieldwork/add_pr2999_prepare_failure_barrier.py \
             src/indexer/index_writer.rs \
             .fieldwork/pr2999_prepare_failure_barrier.rs
+          # `git diff` omits untracked files. Mark the generated test as
+          # intent-to-add so the file fence includes it without staging bytes.
+          git add -N src/indexer/index_writer/fieldwork_prepare_failure_barrier.rs
           git diff --check
           test "$(git diff --name-only | sort | tr '\n' ' ')" = "src/indexer/index_writer.rs src/indexer/index_writer/fieldwork_prepare_failure_barrier.rs "
           git diff -- src/indexer/index_writer.rs
@@ -64,6 +67,7 @@ jobs:
             src/indexer/index_writer/fieldwork_prepare_failure_barrier.rs
           test ! -e Cargo.lock
           cargo +1.88.0 generate-lockfile
+          git add -N Cargo.lock
           cargo +1.88.0 test --lib --locked --no-default-features -- --list > "$RUNNER_TEMP/tantivy-lib-tests.txt"
           grep -Fx 'indexer::index_writer::fieldwork_prepare_failure_barrier::prepare_commit_error_returns_before_other_epoch_flushes_settle: test' "$RUNNER_TEMP/tantivy-lib-tests.txt"
           grep -Fx 'indexer::index_writer::tests::test_prepare_with_commit_message: test' "$RUNNER_TEMP/tantivy-lib-tests.txt"
