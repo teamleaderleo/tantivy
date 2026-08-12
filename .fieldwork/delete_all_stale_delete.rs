@@ -12,7 +12,7 @@ fn setup() -> crate::Result<(Index, IndexWriter<TantivyDocument>, Field)> {
 fn commit_and_sync(writer: &mut IndexWriter<TantivyDocument>) -> crate::Result<u64> {
     let opstamp = writer.commit()?;
     // Neutralize the separate committed_opstamp defect tracked upstream in #2666.
-    // This probe asks whether pending deletes are independently hazardous even
+    // This probe asks whether delete state is independently hazardous even
     // when the writer's rollback target is kept authoritative.
     writer.committed_opstamp = opstamp;
     assert_eq!(writer.commit_opstamp(), opstamp);
@@ -23,6 +23,30 @@ fn num_docs(index: &Index) -> crate::Result<u64> {
     Ok(index.reader()?.searcher().num_docs())
 }
 
+fn push_two_deletes(
+    writer: &IndexWriter<TantivyDocument>,
+    text_field: Field,
+) -> (u64, u64) {
+    let first_delete = writer.delete_term(Term::from_field_text(text_field, "hello"));
+    let second_delete = writer.delete_term(Term::from_field_text(text_field, "hello"));
+    assert!(second_delete > first_delete);
+    (first_delete, second_delete)
+}
+
+fn force_pending_deletes_into_block(
+    writer: &IndexWriter<TantivyDocument>,
+    first_delete: u64,
+    second_delete: u64,
+) {
+    // A cursor sitting at the old tail asks for its next block. That forces
+    // DeleteQueue's pending writer Vec into an immutable linked block.
+    let mut flush_probe = writer.delete_queue.cursor();
+    assert_eq!(flush_probe.get().map(|op| op.opstamp), Some(first_delete));
+    assert!(flush_probe.advance());
+    assert_eq!(flush_probe.get().map(|op| op.opstamp), Some(second_delete));
+    drop(flush_probe);
+}
+
 #[test]
 fn pending_deletes_survive_delete_all_even_with_synced_commit_opstamp() -> crate::Result<()> {
     let (index, mut writer, text_field) = setup()?;
@@ -31,10 +55,8 @@ fn pending_deletes_survive_delete_all_even_with_synced_commit_opstamp() -> crate
     let first_commit = commit_and_sync(&mut writer)?;
     assert_eq!(num_docs(&index)?, 1);
 
-    let first_delete = writer.delete_term(Term::from_field_text(text_field, "hello"));
-    let second_delete = writer.delete_term(Term::from_field_text(text_field, "hello"));
+    let (first_delete, second_delete) = push_two_deletes(&writer, text_field);
     assert!(first_delete > first_commit);
-    assert!(second_delete > first_delete);
 
     let rewound_to = writer.delete_all_documents()?;
     assert_eq!(rewound_to, first_commit);
@@ -51,6 +73,59 @@ fn pending_deletes_survive_delete_all_even_with_synced_commit_opstamp() -> crate
     // Characterize the current defect: the stale uncommitted delete is still in
     // DeleteQueue and removes the newly-added document after delete_all_documents().
     assert_eq!(num_docs(&index)?, 0);
+    Ok(())
+}
+
+#[test]
+fn flushed_uncommitted_deletes_cross_delete_all_when_readding_before_commit() -> crate::Result<()> {
+    let (index, mut writer, text_field) = setup()?;
+
+    writer.add_document(doc!(text_field => "hello"))?;
+    let first_commit = commit_and_sync(&mut writer)?;
+    assert_eq!(num_docs(&index)?, 1);
+
+    let (first_delete, second_delete) = push_two_deletes(&writer, text_field);
+    assert!(first_delete > first_commit);
+    force_pending_deletes_into_block(&writer, first_delete, second_delete);
+
+    // The pending Vec is now empty: the stale deletes live in an immutable
+    // queue block. Clear and re-add before the required commit, which is a
+    // natural rebuild sequence for delete_all_documents(). The current worker
+    // still owns its pre-clear delete cursor during this commit.
+    let rewound_to = writer.delete_all_documents()?;
+    assert_eq!(rewound_to, first_commit);
+    let readd_opstamp = writer.add_document(doc!(text_field => "hello"))?;
+    assert!(readd_opstamp <= second_delete);
+    commit_and_sync(&mut writer)?;
+
+    // If this remains zero, clearing only DeleteQueue's pending writer Vec at
+    // delete_all_documents() cannot be a complete repair: there was nothing
+    // left in that Vec at the clear boundary.
+    assert_eq!(num_docs(&index)?, 0);
+    Ok(())
+}
+
+#[test]
+fn flushed_uncommitted_deletes_stop_crossing_after_clear_commit() -> crate::Result<()> {
+    let (index, mut writer, text_field) = setup()?;
+
+    writer.add_document(doc!(text_field => "hello"))?;
+    let first_commit = commit_and_sync(&mut writer)?;
+    let (first_delete, second_delete) = push_two_deletes(&writer, text_field);
+    force_pending_deletes_into_block(&writer, first_delete, second_delete);
+
+    writer.delete_all_documents()?;
+    commit_and_sync(&mut writer)?;
+    assert_eq!(num_docs(&index)?, 0);
+
+    let readd_opstamp = writer.add_document(doc!(text_field => "hello"))?;
+    assert!(readd_opstamp <= second_delete);
+    commit_and_sync(&mut writer)?;
+
+    // The clear commit replaces workers on current main; the replacement
+    // delete cursor starts after the already-flushed stale block.
+    assert_eq!(num_docs(&index)?, 1);
+    assert!(first_delete > first_commit);
     Ok(())
 }
 
