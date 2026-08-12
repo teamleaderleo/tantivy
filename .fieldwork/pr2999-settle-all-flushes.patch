@@ -1,7 +1,7 @@
 diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
 --- a/src/indexer/index_writer.rs
 +++ b/src/indexer/index_writer.rs
-@@ -687,8 +687,20 @@
+@@ -686,10 +686,22 @@
          // segments, ack, and park — replacing the old join-then-respawn per
          // commit. Waiting on the acks is the barrier.
          let document_receiver = self.recreate_document_channel();
