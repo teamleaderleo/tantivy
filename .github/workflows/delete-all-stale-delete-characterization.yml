@@ -1,0 +1,94 @@
+name: delete_all stale-delete characterization
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/delete-all-stale-delete-base-1f32
+    paths:
+      - '.fieldwork/add_delete_all_stale_delete.py'
+      - '.fieldwork/delete_all_stale_delete.rs'
+      - '.github/workflows/delete-all-stale-delete-characterization.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  characterize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact carrier head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact upstream-main base and carrier fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=1f32c1a8af0eb9d68bd3f5576caf20941364b657
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git merge-base HEAD "$base")" = "$base"
+          test -z "$(git diff --name-only "$base"...HEAD -- src/indexer/index_writer.rs src/indexer/delete_queue.rs)"
+          actual="$(git diff --name-only "$base"...HEAD | sort | tr '\n' ' ')"
+          expected=".fieldwork/add_delete_all_stale_delete.py .fieldwork/delete_all_stale_delete.rs .github/workflows/delete-all-stale-delete-characterization.yml "
+          test "$actual" = "$expected"
+
+      - name: Materialize characterization tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .fieldwork/add_delete_all_stale_delete.py \
+            src/indexer/index_writer.rs \
+            .fieldwork/delete_all_stale_delete.rs
+          git add -N src/indexer/index_writer/fieldwork_delete_all_stale_delete.rs
+          git diff --check
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "src/indexer/index_writer.rs src/indexer/index_writer/fieldwork_delete_all_stale_delete.rs "
+
+      - name: Install exact Rust and formatter
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+        with:
+          toolchain: 1.88.0
+          profile: minimal
+          override: true
+      - name: Install pinned rustfmt
+        run: rustup toolchain install nightly-2025-06-26 --profile minimal --component rustfmt
+
+      - name: Build locked graph and enumerate exact tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt +nightly-2025-06-26 --edition 2021 --check \
+            src/indexer/index_writer.rs \
+            src/indexer/index_writer/fieldwork_delete_all_stale_delete.rs
+          test ! -e Cargo.lock
+          cargo +1.88.0 generate-lockfile
+          cargo +1.88.0 test --lib --locked --no-default-features -- --list > "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          prefix=indexer::index_writer::fieldwork_delete_all_stale_delete
+          grep -Fx "${prefix}::pending_deletes_survive_delete_all_even_with_synced_commit_opstamp: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          grep -Fx "${prefix}::delete_all_without_pending_deletes_allows_readd: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          grep -Fx "${prefix}::committed_delete_before_delete_all_does_not_delete_readd: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
+
+      - name: Execute stale-delete characterization
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix=indexer::index_writer::fieldwork_delete_all_stale_delete
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            "${prefix}::pending_deletes_survive_delete_all_even_with_synced_commit_opstamp" \
+            -- --exact --nocapture
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            "${prefix}::delete_all_without_pending_deletes_allows_readd" \
+            -- --exact --nocapture
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            "${prefix}::committed_delete_before_delete_all_does_not_delete_readd" \
+            -- --exact --nocapture
+
+      - name: Final carrier hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f Cargo.lock
+          git diff --check
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "src/indexer/index_writer.rs src/indexer/index_writer/fieldwork_delete_all_stale_delete.rs "
