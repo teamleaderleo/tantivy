@@ -33,6 +33,7 @@ jobs:
           git fetch origin "$carrier"
           git show "$carrier:.fieldwork/prepare-commit-generation-fence.patch" > "$RUNNER_TEMP/candidate.patch"
           test "$(git hash-object "$RUNNER_TEMP/candidate.patch")" = 23290f4dc852471c7f58014ce81db37f6678b5bc
+          mkdir -p src/indexer/index_writer
           git show "$carrier:src/indexer/index_writer/prepare_commit_generation_fence.rs" > src/indexer/index_writer/prepare_commit_generation_fence.rs
           test "$(git hash-object src/indexer/index_writer/prepare_commit_generation_fence.rs)" = 3b44c47386431b85d514cfc952357a12315a167a
           git apply --check "$RUNNER_TEMP/candidate.patch"
