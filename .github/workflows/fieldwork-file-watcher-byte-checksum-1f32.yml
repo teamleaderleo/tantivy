@@ -1,0 +1,61 @@
+name: Fieldwork file watcher byte checksum current main
+
+on:
+  pull_request:
+    branches:
+      - candidate/file-watcher-checksum-1f32
+    paths:
+      - .github/workflows/fieldwork-file-watcher-byte-checksum-1f32.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 1a567f50e1544590aece182814452d069a76cafb
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify identity and current-main fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "1a567f50e1544590aece182814452d069a76cafb"
+          test "$(git diff --name-only 1f32c1a8af0eb9d68bd3f5576caf20941364b657..HEAD)" = "src/directory/mmap_directory/file_watcher.rs"
+          git diff --check 1f32c1a8af0eb9d68bd3f5576caf20941364b657..HEAD
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check candidate formatting only
+        run: rustfmt --edition 2021 --check src/directory/mmap_directory/file_watcher.rs
+
+      - name: Resolve ephemeral dependency lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          sha256sum Cargo.lock
+
+      - name: Run checksum regression
+        run: cargo test --locked test_compute_checksum_preserves_line_boundaries -- --nocapture
+
+      - name: Run adjacent file watcher tests
+        run: cargo test --locked file_watcher -- --nocapture
+
+      - name: Verify source stayed immutable
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm Cargo.lock
+          test "$(git rev-parse HEAD)" = "1a567f50e1544590aece182814452d069a76cafb"
+          test -z "$(git status --porcelain)"
