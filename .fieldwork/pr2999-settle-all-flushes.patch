@@ -1,0 +1,28 @@
+diff --git a/src/indexer/index_writer.rs b/src/indexer/index_writer.rs
+--- a/src/indexer/index_writer.rs
++++ b/src/indexer/index_writer.rs
+@@ -686,10 +686,22 @@
+         // segments, ack, and park — replacing the old join-then-respawn per
+         // commit. Waiting on the acks is the barrier.
+         let document_receiver = self.recreate_document_channel();
++        let mut first_flush_error = None;
+         for flushed in std::mem::take(&mut self.worker_flushes) {
+             // A disconnected channel means the worker panicked before acking.
+-            flushed
++            let flush_result = flushed
+                 .recv()
+-                .map_err(|_| TantivyError::SystemError(WORKER_FLUSH_FAILED.to_string()))??;
++                .map_err(|_| TantivyError::SystemError(WORKER_FLUSH_FAILED.to_string()))
++                .and_then(|result| result);
++            if let Err(error) = flush_result {
++                if first_flush_error.is_none() {
++                    first_flush_error = Some(error);
++                } else {
++                    warn!("Additional indexing worker flush error after primary failure: {error}");
++                }
++            }
++        }
++        if let Some(error) = first_flush_error {
++            return Err(error);
+         }
+         // Hand every (parked) worker the next epoch's channel.
