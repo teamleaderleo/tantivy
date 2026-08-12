@@ -90,6 +90,12 @@ pub struct IndexWriter<D: Document = TantivyDocument> {
 
     stamper: Stamper,
     committed_opstamp: Opstamp,
+
+    #[cfg(test)]
+    fail_worker_spawn_after: Option<usize>,
+
+    #[cfg(test)]
+    fail_next_recovery_rollback: bool,
 }
 
 fn compute_deleted_bitset(
@@ -334,6 +340,12 @@ impl<D: Document> IndexWriter<D> {
             stamper,
 
             worker_id: 0,
+
+            #[cfg(test)]
+            fail_worker_spawn_after: None,
+
+            #[cfg(test)]
+            fail_next_recovery_rollback: false,
         };
         index_writer.start_workers()?;
         Ok(index_writer)
@@ -412,6 +424,18 @@ impl<D: Document> IndexWriter<D> {
     /// Spawns a new worker thread for indexing.
     /// The thread consumes documents from the pipeline.
     fn add_indexing_worker(&mut self) -> crate::Result<()> {
+        #[cfg(test)]
+        if self.fail_worker_spawn_after == Some(0) {
+            self.fail_worker_spawn_after = None;
+            return Err(TantivyError::ErrorInThread(
+                "fieldwork synthetic replacement-worker spawn failure".to_string(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(spawns_before_failure) = self.fail_worker_spawn_after.as_mut() {
+            *spawns_before_failure -= 1;
+        }
+
         let document_receiver_clone = self.operation_receiver()?;
         let index_writer_bomb = self.index_writer_status.create_bomb();
 
@@ -476,6 +500,30 @@ impl<D: Document> IndexWriter<D> {
             self.add_indexing_worker()?;
         }
         Ok(())
+    }
+
+    fn rollback_after_prepare_failure(&mut self) -> crate::Result<()> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_recovery_rollback) {
+            return Err(TantivyError::ErrorInThread(
+                "fieldwork synthetic recovery rollback failure".to_string(),
+            ));
+        }
+        self.rollback().map(|_| ())
+    }
+
+    fn recover_after_prepare_failure(&mut self, primary_error: &TantivyError) {
+        if let Err(cleanup_error) = self.rollback_after_prepare_failure() {
+            error!(
+                "Failed to rollback after prepare_commit error. primary={primary_error:?}; \
+                 cleanup={cleanup_error:?}"
+            );
+            // `rollback()` may have consumed the directory lock before failing.
+            // Whatever state remains must reject new admission and publication.
+            self.segment_updater.kill();
+            drop(self.index_writer_status.create_bomb());
+            self.drop_sender();
+        }
     }
 
     /// Detects and removes the files that are not used by the index anymore.
@@ -634,12 +682,32 @@ impl<D: Document> IndexWriter<D> {
 
         let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
 
+        let mut first_worker_error = None;
         for worker_handle in former_workers_join_handle {
-            let indexing_worker_result = worker_handle
-                .join()
-                .map_err(|e| TantivyError::ErrorInThread(format!("{e:?}")))?;
-            indexing_worker_result?;
-            self.add_indexing_worker()?;
+            let worker_result = match worker_handle.join() {
+                Ok(worker_result) => worker_result,
+                Err(error) => Err(TantivyError::ErrorInThread(format!("{error:?}"))),
+            };
+            if let Err(error) = worker_result {
+                if first_worker_error.is_none() {
+                    first_worker_error = Some(error);
+                } else {
+                    error!("Additional indexing worker failure during prepare_commit: {error:?}");
+                }
+            }
+        }
+
+        if let Some(error) = first_worker_error {
+            self.recover_after_prepare_failure(&error);
+            return Err(error);
+        }
+
+        // Publish the next worker generation only after every old worker has
+        // settled successfully. A partial replacement generation is rolled back
+        // and rebuilt before the spawn error is returned.
+        if let Err(error) = self.start_workers() {
+            self.recover_after_prepare_failure(&error);
+            return Err(error);
         }
 
         let commit_opstamp = self.stamper.stamp();
@@ -813,6 +881,9 @@ impl<D: Document> Drop for IndexWriter<D> {
         }
     }
 }
+
+#[cfg(test)]
+mod prepare_commit_generation_fence;
 
 #[cfg(test)]
 mod tests {
