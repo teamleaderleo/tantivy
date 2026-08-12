@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -72,7 +72,7 @@ impl FileWatcher {
     }
 
     fn compute_checksum(path: &Path) -> Result<u32, io::Error> {
-        let reader = match fs::File::open(path) {
+        let mut reader = match fs::File::open(path) {
             Ok(f) => io::BufReader::new(f),
             Err(e) => {
                 warn!("Failed to open meta file {path:?}: {e:?}");
@@ -81,9 +81,13 @@ impl FileWatcher {
         };
 
         let mut hasher = Hasher::new();
-
-        for line in reader.lines() {
-            hasher.update(line?.as_bytes())
+        let mut buffer = [0u8; 8 * 1024];
+        loop {
+            let num_bytes = reader.read(&mut buffer)?;
+            if num_bytes == 0 {
+                break;
+            }
+            hasher.update(&buffer[..num_bytes]);
         }
 
         Ok(hasher.finalize())
@@ -103,6 +107,21 @@ mod tests {
 
     use super::*;
     use crate::directory::mmap_directory::atomic_write;
+
+    #[test]
+    fn test_compute_checksum_preserves_line_boundaries() -> crate::Result<()> {
+        let tmp_dir = tempfile::TempDir::new()?;
+        let tmp_file = tmp_dir.path().join("watched.txt");
+
+        std::fs::write(&tmp_file, b"ab\nc")?;
+        let first_checksum = FileWatcher::compute_checksum(&tmp_file)?;
+
+        std::fs::write(&tmp_file, b"a\nbc")?;
+        let second_checksum = FileWatcher::compute_checksum(&tmp_file)?;
+
+        assert_ne!(first_checksum, second_checksum);
+        Ok(())
+    }
 
     #[test]
     fn test_file_watcher_drop_watcher() -> crate::Result<()> {
