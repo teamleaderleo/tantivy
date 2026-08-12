@@ -67,6 +67,8 @@ jobs:
           cargo +1.88.0 test --lib --locked --no-default-features -- --list > "$RUNNER_TEMP/tantivy-lib-tests.txt"
           prefix=indexer::index_writer::fieldwork_delete_all_stale_delete
           grep -Fx "${prefix}::pending_deletes_survive_delete_all_even_with_synced_commit_opstamp: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          grep -Fx "${prefix}::flushed_uncommitted_deletes_cross_delete_all_when_readding_before_commit: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
+          grep -Fx "${prefix}::flushed_uncommitted_deletes_stop_crossing_after_clear_commit: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
           grep -Fx "${prefix}::delete_all_without_pending_deletes_allows_readd: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
           grep -Fx "${prefix}::committed_delete_before_delete_all_does_not_delete_readd: test" "$RUNNER_TEMP/tantivy-lib-tests.txt"
 
@@ -77,6 +79,12 @@ jobs:
           prefix=indexer::index_writer::fieldwork_delete_all_stale_delete
           cargo +1.88.0 test --lib --locked --no-default-features \
             "${prefix}::pending_deletes_survive_delete_all_even_with_synced_commit_opstamp" \
+            -- --exact --nocapture
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            "${prefix}::flushed_uncommitted_deletes_cross_delete_all_when_readding_before_commit" \
+            -- --exact --nocapture
+          cargo +1.88.0 test --lib --locked --no-default-features \
+            "${prefix}::flushed_uncommitted_deletes_stop_crossing_after_clear_commit" \
             -- --exact --nocapture
           cargo +1.88.0 test --lib --locked --no-default-features \
             "${prefix}::delete_all_without_pending_deletes_allows_readd" \
