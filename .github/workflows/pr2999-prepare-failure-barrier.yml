@@ -67,7 +67,9 @@ jobs:
             src/indexer/index_writer/fieldwork_prepare_failure_barrier.rs
           test ! -e Cargo.lock
           cargo +1.88.0 generate-lockfile
-          git add -N Cargo.lock
+          # Cargo.lock is intentionally gitignored in Tantivy; force only the
+          # intent-to-add marker so final diff hygiene can see it without staging bytes.
+          git add -f -N Cargo.lock
           cargo +1.88.0 test --lib --locked --no-default-features -- --list > "$RUNNER_TEMP/tantivy-lib-tests.txt"
           grep -Fx 'indexer::index_writer::fieldwork_prepare_failure_barrier::prepare_commit_error_returns_before_other_epoch_flushes_settle: test' "$RUNNER_TEMP/tantivy-lib-tests.txt"
           grep -Fx 'indexer::index_writer::tests::test_prepare_with_commit_message: test' "$RUNNER_TEMP/tantivy-lib-tests.txt"
